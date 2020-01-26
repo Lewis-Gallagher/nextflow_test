@@ -2,8 +2,8 @@
 
 params.threads = 4
 
-params.read_pairs = "$baseDir/data/*_R{1,2}_*.fastq.gz"
-params.reference = "$baseDir/data/chr15.fa"
+params.read_pairs = "$baseDir/data/*_R{1,2}*.fq"
+params.reference = "$baseDir/data/genome.fa"
 params.saveReference = true
 params.outdir = "$baseDir/out"
 
@@ -41,7 +41,7 @@ process makeBWAindex {
 
     script:
     """
-    ~/Software/bwa/bwa index $fasta
+    bwa index $fasta
     """
 }
 
@@ -62,19 +62,20 @@ process makeFASTAindex {
 
 
 process bwa {
-    publishDir "${params.outdir}/align", mode: 'copy', pattern: "*.sam", overwrite: true
+    publishDir "${params.outdir}/align", mode: 'copy', pattern: "*.bam", overwrite: true
 
 		input:
 		set id, file(r1), file(r2) from reads
-		file(index) from bwa_index
-		file reference
+		//file(index) from bwa_index
+		//file reference
 
 		output:
-		set id, file("${id}.aln.sam")
+		set id, file("${id}.aln.bam")
 
     script:
     """
-        ~/Software/bwa/bwa mem -M -c 1 -k 50 -t ${params.threads} $params.reference ${r1} ${r2} -o ${id}.aln.sam
+        bwa mem -M -c 1 -k 50 -t ${params.threads} ${params.reference} ${r1} ${r2} \
+        | samtools sort -o ${id}.aln.bam -
 
     """
 }
