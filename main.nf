@@ -64,6 +64,7 @@ Channel
 
 reference = file(params.reference)
 
+
     
   //--------------------------------------------\\
  //    		     WORKFLOW                    \\
@@ -114,10 +115,10 @@ process bwa {
     publishDir "${params.outdir}/align", mode: 'copy', pattern: "*.bam", overwrite: true
 
     input:
-    set sample_id, file reads from reads_ch
+    set sample_id, file(reads) from reads_ch
 
     output:
-    set sample_id, file "${sample_id}.aln.bam" into clipBamOutput_ch_ch
+    set sample_id, file "${sample_id}.aln.bam" into bwaOutput_ch
 
     script:
     
@@ -149,7 +150,7 @@ process markDuplicates {
     container 'broadinstitute/gatk:latest'
 
     input:
-    set sample_id, file infile_bam from clipBamOutput_ch_ch
+    set sample_id, file infile_bam from bwaOutput_ch
 
     output:
     set sample_id, file outfile_bam into markDuplicatesOutput_BAM_ch
@@ -221,49 +222,39 @@ process foo {
 }
 
 
+targets = [ file(params.intervals), file(params.bed_interval), file(params.hotspots) ]
+targets_extensions = ['', '.targetbed', '.hotspots' ]
+
 process calculateHsMetrics {
-    publishDir "${params.outdir}/qc", mode: 'copy', overwrite: true
-    
-    input:
-    file bwaBam from clipBamOutput_BAM_ch
-    file targets from target_ch
-    file reference
-   
-    output:
-    set sample_id, file "*.{qc.metrics*, *qc.coverage*, *base.coverage*}" into hsMetricsOutput_ch
-    set sample_id, file(outfile_
 
+	publishDir "${params.outdir}/qc", mode: 'copy', overwrite: true
 
-    script:
-    
-    extension = targets.getExtension()
-    
-    if (extension == 'bed.intervals')
-        ext = '.targetbed'
-    elif (extension == 'hostpots')
-        ext = '.hotspots'
-    else
-        ext = ''
-    
-    
-    outfile = sample_id + '.qc.metrics' + ext 
-   
+	input:
+	file bwaBam from clipBamOutput_BAM_ch
+	each target from targets
+	each extension from targets_extensions
+	
 
-    """
-    CalculateHsMetrics \
-	REFERENCE_SEQUENCE=${reference} \
-	INPUT=${bwaBam} \
-	OUTPUT=${sample_id}.qc.metrics${ext} \
-	BAIT_INTERVALS=${targets} \
-	TARGET_INTERVALS=${targets} \
-	BAIT_SET_NAME=${sample_id} \
-	METRIC_ACCUMULATION_LEVEL=ALL_READS \
-	TMP_DIR=${params.java_tmp} \
-	PER_TARGET_COVERAGE=${sample_id}.qc.coverage${ext} \
-	PER_BASE_COVERAGE=${sample_id}.base.coverage${ext} \
-	VALIDATION_STRINGENCY=LENIENT
+	output:
+	set sample_id, file "*.{qc.metrics*, *qc.coverage*, *base.coverage*}" into hsMetricsOutput_ch
 
-    """
+	script:
+	
+	"""
+    gatk CalculateHsMetrics \
+    	REFERENCE_SEQUENCE=${reference} \
+    	INPUT=${bwaBam} \
+    	OUTPUT=${sample_id}.qc.metrics${ext} \
+    	BAIT_INTERVALS=${targets} \
+    	TARGET_INTERVALS=${targets} \
+    	BAIT_SET_NAME=${sample_id} \
+    	METRIC_ACCUMULATION_LEVEL=ALL_READS \
+    	TMP_DIR=${params.java_tmp} \
+    	PER_TARGET_COVERAGE=${sample_id}.qc.coverage${ext} \
+    	PER_BASE_COVERAGE=${sample_id}.base.coverage${ext} \
+    	VALIDATION_STRINGENCY=LENIENT    
+
+	"""
 
 process collectTargedPcrMetrics {
 
@@ -300,41 +291,72 @@ process collectTargedPcrMetrics {
 
 
 
-////
-//
-//process snv {
-//    publishDir "${params.outdir}/snv", mode: 'copy', overwrite: true
-//
-//    input:
-//    file(bam) from clipBamOutput_ch_BAM
-//    file(reference)
-//    
-//    output:
-//    set sample_id, file(outfile_vcf) into snvOutput_VCF
-//
-//    script:
-//    
-//    """
-//    BaseRecalibrator \
-//        -L  \
-//  	--interval-set-rule UNION \
-//	--interval-merging-rule OVERLAPPING_ONLY \
-// 	--interval-padding 200 \
-//  	-I $gatk_input \
-//  	-R $ref_fasta  \
-//  	-O $gatk_output/$id.${tumour}.recalibrated.table \
-//  	--known-sites $dbsnp_vcf \
-//  	--known-sites $indel_vcf \
-//  	--read-filter NotSecondaryAlignmentReadFilter \
-//  	--read-filter NotSupplementaryAlignmentReadFilter $dupfilter \
-//  	--read-filter OverclippedReadFilter \
-//	--filter-too-short 60 \
-//	--dont-require-soft-clips-both-ends true
-//
-//    """
-//
+process baseRecalibartor {
+    publishDir "${params.outdir}/snv", mode: 'copy', overwrite: true
+
+    input:
+    file(bam) from clipBamOutput_ch_BAM
+    file(reference)
+    
+    output:
+    set sample_id, file(recal_table) into baseRecalibratorOutput_ch
+
+    script:
+    
+    """
+    gatk BaseRecalibrator \
+    	-L ??? \
+  		--interval-set-rule UNION \
+		--interval-merging-rule OVERLAPPING_ONLY \
+ 		--interval-padding 200 \
+  		-I $gatk_input \
+  		-R $ref_fasta  \
+  		-O ${sample_id}.recalibrated.table \
+  		--known-sites $dbsnp_vcf \
+  		--known-sites $indel_vcf \
+  		--read-filter NotSecondaryAlignmentReadFilter \
+  		--read-filter NotSupplementaryAlignmentReadFilter $dupfilter \
+  		--read-filter OverclippedReadFilter \
+		--filter-too-short 60 \
+		--dont-require-soft-clips-both-ends true
+
+    """
+    }
 
 
+process applyBQSR {
+    publishDir "${params.outdir}/snv", mode: 'copy', overwrite: true
+
+	input:
+	file(recal_table) from baseRecalibratorOutput_ch
+	file(bam) from clipBamOutput_ch_BAM
+	file(reference)
+
+	output:
+	set sample_id, file(recalibratedBam) into applyBQSROutput_ch
+
+	script:
+
+	"""
+	gatk ApplyBQSR \
+		-L ??? \
+		--bqsr-recal-file ${recal_table} \
+		--interval-set-rule UNION \
+		--interval-merging-rule OVERLAPPING_ONLY \
+		--interval-padding 200 \
+		-I ${bam} \
+		-R ${reference} \
+		-O ${recalibratedBam} \
+		--read-filter NotSecondaryAlignmentReadFilter \
+ 		--read-filter NotSupplementaryAlignmentReadFilter $dupfilter \
+  		--read-filter OverclippedReadFilter \
+		--filter-too-short 60 \
+		--dont-require-soft-clips-both-ends true
+	
+	"""
+
+
+    }
 
 
 
