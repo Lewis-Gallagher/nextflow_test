@@ -1,718 +1,801 @@
 #!/usr/bin/env nextflow
-
+params.pool_id = "Pool_TEST"
+params.samplesheet="$baseDir/Analysis/${params.pool_id}.hpc.csv"
 params.threads = 4
-//params.fastqs = "$baseDir/data/fastq/*_{R1,R2,R3}_*.fastq.gz"
-params.reference = "$baseDir/data/genome.fa"
-params.saveReference = "true"
-params.outdir = "$baseDir/out"
-params.read_structures = "+T +T +M"
-params.fgbio = "/apps/fgbio/0.6.1/fgbio-0.6.1.jar"
+params.fastqs = "$baseDir/fastq/${params.pool_id}/*_{R1,R2,R3}_*.fastq.gz"
+params.reference = "/scratch/DMP/DUDMP/TRANSGEN/transgen-mdx/ngs/7.resources/hg19/hg19.fa"
+params.outdir = "$baseDir/Analysis/"
+params.read_structures = "+T +M +T"
 params.seq_type = "cfdna"
 params.umi="IDT"
-params.umi_family_size = 3
+params.umi_family_size = 1
+params.expected_umi_len = 9
 params.seed = 50
-reference = file(params.reference)
-
-//markdups metrics
 params.rm_dups=true
-params.java_tmp=""
-params.java_cpu=2
 
+params.java_tmp="tmp/"
+params.java_cpu=9
+params.java_mem=128
+params.fgbio_jar = "/apps/fgbio/0.6.1/fgbio-0.6.1.jar"
+params.picard_jar="/apps/picard-tools/2.8.2/picard-2.8.2.jar"
+params.picard="java -Xmx${params.java_mem}g -XX:ParallelGCThreads=${params.java_cpu} -jar ${params.picard_jar}"
+params.fgbio="java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar ${params.fgbio_jar}"
+reference = file(params.reference)
 
 //--------------------------------------------------
 
 
-log.info """\
+log.info """
+
 	------------
 	RMH PIPELINE
 	------------
-	Read pairs:	${params.fastqs}
+	FASTQ:	        ${params.fastqs}
 	Reference: 	${params.reference}
-	Output dir: ${params.outdir}
+	Output dir:     ${params.outdir}
 	
  	
 """
 .stripIndent()
 
-logParams(params, "nextflow_parameters.txt")
 
+logParams(params, params.outdir+ "/nextflow_parameters.txt")
 
+// Writes all run parameters to text file
 def logParams(p, n) {
-   File file = new File(n)
-   file.write "Parameter:\tValue\n"
+	
+	File file = new File(n)
+	file.write "Parameter:\tValue\n"
 
-   for(s in p) {
-     file << "${s.key}:\t${s.value}\n"
- }
+	for(s in p) {
+	file << "${s.key}:\t${s.value}\n"
+	}
 }
 
 
-//-------------------------------------------------
-// 	Send fastq pairs/trios to to reads channel
-//-------------------------------------------------
 
+//^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//
+//                     CHANNELS
+//
+//vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+
+
+//Channel.fromPath( file(params.samplesheet) )
+//        .splitCsv(header: true, sep: ',')
+//        .map{row ->
+//	    def pool_id = row['pool_id']
+//          def sample_ID = row['samp_id']
+//          def run_id = row['run_id']
+//	    def index_id = row['index_id']
+//	    def seq_plat = row['seq_plat']
+//	    def seq_type = row['seq_type']
+//	    def target_bed = row['target_bed']
+//	    def gatk_grp = row['gatk_grp']
+//	    def vpanel = row['vpanel']
+//	    def umi = row['umi']
+//	    def tag = row['tag']
+//	    def tumour_type = row['tumour_type']
+//	    def trial_id = row['tumour_type']
+//	    def tumour_content = row['tumour_content']
+//
+//	    return [ 'Pool ID': pool_id, 
+//		     'Sample ID': sample_ID, 
+//		     'Run ID': run_id, 
+//		     'Index ID': index_id, 
+//		     'Sequencing Platform': seq_plat, 
+//		     'Analysis type': seq_type, 
+//		     'Target BED': target_bed, 
+//		     'GATK group': gatk_grp, 
+//		     'Virtual Panel': vpanel, 
+//		     'UMI setting': umi, 
+//		     'Tumour/Normal': tag, 
+//		     'Tumour type': tumour_type, 
+//		     'Trial ID': trial_id, 
+//		     'Tumour content': tumour_content  ]
+//        }
+//	.flatMap()
+//        .into { samplesheet_info }
+//
+//samplesheet_info.subscribe { println "samplesheet_info: ${it}" }
+
+
+
+
+// Send fastq pairs/trios to to reads channel
 // Giving size: -1 should allow for any number of files in the group i.e. R1,R2 or R1,R2,R3 
 Channel
-    .fromFilePairs("$baseDir/data/fastq/*_{R1,R2,R3}_*.fastq.gz", size: -1)
-    .ifEmpty { exit 1, "Input FASTQs could not be found." }
-    .into { fastq_ch }
+	.fromFilePairs( params.fastqs, size: -1)
+	.ifEmpty { exit 1, "Input FASTQs could not be found." }
+	.set { fastq_channel }
 
 
-//// Index channels
-//
-//Channel
-//    .fromPath(params.reference)
-//    .ifEmpty { exit 1, "Reference fasta could not be found: ${params.reference}" }
-//    .into { fastaForBWAIndex_ch; fastaForSamtoolsIndex_ch }
-//
-////fasta_for_bwa_index = Channel
-// //   .fromPath("${params.reference}")
-////fasta_for_samtools_index = Channel
-////    .fromPath("${params.reference}")
-//
-//
-//
-//    
-//  //--------------------------------------------\\
-// //    		        WORKFLOW                   \\
-////------------------------------------------------\\
-//
-//
-//process makeBWAindex {
-//    publishDir path: { params.saveReference ? "${params.outdir}/reference_genome" : params.outdir },
-//       	 saveAs: { params.saveReference ? it : null }, mode: 'copy'
-//
-//    input:
-//    file fasta from fastaForBWAIndex_ch
-//
-//    output:
-//    file "*.{amb,ann,bwt,pac,sa}" into bwaIndex_ch
-//
-//    when:
-//    params.seqtype != 'umi' || params.seqtype != 'cfdna'
-//
-//    script:
-//
-//    """
-//    bwa index $fasta
-//
-//    """
-//}
-//
-//process makeFASTAindex {
-//    publishDir path: { params.saveReference ? "${params.outdir}/reference_genome" : params.outdir },
-//       	saveAs: { params.saveReference ? it : null }, mode: 'copy'
-//    
-//    input:
-//    file fasta from fastaForSamtoolsIndex_ch
-//
-//    output:
-//    file "*.fai" into faiIndex_ch
-//
-//    when:
-//    params.seq_type != 'umi' || params.seq_type != 'cfdna'
-//
-//    script:
-//
-//    """
-//    samtools faidx $fasta
-//
-//    """
-//}
+
+//^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//					  	 
+//			MAIN			 
+//						 
+//vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+
+
+
+
+//  /~/----------------------------------------\~\
+//  \~\             Capture analysis           /~/
+//  /~/----------------------------------------\~\
 
 
 process bwa {
-    tag "$sample_id"
-    container 'lewis_bwa:v0.1'
 
-    publishDir "${params.outdir}/Alignments", mode: 'copy', pattern: "*.bam", overwrite: true
+	when:
+	params.seq_type == 'capture'
 
-    input:
-    set sample_id, file(reads) from bwaInput_ch
+	input:
+	set sample_id, file(infileFastqs) from fastq_channel
 
-    output:
-    set sample_id, file(outfileBam) into bwaOutput_ch
+	output:
+	set sample_id, file(outfileBam) into bwaOutput
+	
+	script:
+	outfileBam = sample_id + 'aln.bam'
+	"""
+	bwa mem -M -c 1 -t ${params.threads} -k ${params.seed} -p \
+        ${params.reference} ${infileFastqs} > ${outfileBam}
 
-    when:
-    params.seq_type != 'umi' || params.seq_type != 'cfdna'
-
-    script:
-    outfileBam = sample_id + '.aln.bam'
-
-    """
-    bwa mem -M -c 1 -k 50 -t ${params.threads} ${params.reference} ${reads} \
-    | samtools sort -o $alnBam -
-    
-    """
+	"""
 }
 
 
-//process sortSam {
-//    tag "$sample_id"
-//    publishDir "${params.outdir}/Alignments", mode: 'copy', overwrite: true
-//    
-//    input:
-//    set sample_id, file(infileBam) bwaOutput_ch
-//
-//    output:
-//    set sample_id, file(outfileBam) into sortSamOutput_ch
-//
-//    when:
-//    params.seq_type != 'umi' || params.seq_type != 'cfdna'
-//
-//    script:
-//
-//    outfileBam = sample_id + '.fq.aln.sorted.bam'
-//    
-//    """
-//
-//    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$params.java_cpu -jar $params.picard SortSam MAX_RECORDS_IN_RAM=4000000 \
-//        SORT_ORDER=coordinate \
-//        INPUT=${infileBam} \
-//        OUTPUT=${outfileBam} \
-//        CREATE_INDEX=true \
-//        TMP_DIR=${params.java_tmp} \
-//        VALIDATION_STRINGENCY=LENIENT
-//
-//    """
-//}
+process sortSam {
+
+	when:
+	params.seq_type == 'capture'
+
+	input:
+	set sample_id, file(infileBam) from bwaOutput
+
+	output:
+	set sample_id, file(outfileBam) into sortSamOutput
+
+	script:
+	outfileBam = sample_id + '.sorted.bam'
+	"""
+	${params.picard} SortSam \
+                SORT_ORDER=queryname \
+                INPUT=${infileBam} \
+                OUTPUT=${outfileBam} \
+                CREATE_INDEX=true \
+                VALIDATION_STRINGENCY=LENIENT \
+                TMP_DIR=${params.java_tmp}
+
+	"""
+}
 
 
 process markDuplicates {
-    tag "$sample_id"
-    publishDir "${params.outdir}/markdups", mode: 'copy', overwrite: true
 
-    container 'broadinstitute/gatk:latest'
+	when:
+        params.seq_type == 'capture'
 
-    input:
-    set sample_id, file infile_bam from bwaOutput_ch
+	input:
+        set sample_id, file(infileBam) from sortSamOutput
 
-    output:
-    set sample_id, file outfile_bam into markDuplicatesOutput_BAM_ch
-    set sample_id, file outfile_metrics into markDuplicatesOutput_QC_ch
+        output:
+        set sample_id, file(outfileBam) into markDuplicatesOutput
+	set sample_id, file(outfileMetrics) into markDuplicatesOutput_metrics
 
-    when:
-    params.seq_type != 'umi' || params.seq_type != 'cfdna'
-
-    script:
-    outfile_bam = sample_id + ".dedup.bam"
-    outfile_metrics = sample_id + ".mark_dups.metrics"
-  
-    """
-    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$params.java_cpu -jar picard.jar
-        REMOVE_DUPLICATES=${params.rm_dups} \
-        INPUT=${infile_bam} \
-        OUTPUT=${outfile_bam} \
-        METRICS_FILE=${outfile_metrics} \
-        ASSUME_SORTED=true \
-        CREATE_INDEX=false \
-        TMP_DIR=${params.java_tmp} \
-        VALIDATION_STRINGENCY=LENIENT
- 
-    """
+        script:
+        outfileBam = sample_id + '.marked.bam'
+	outfileMetrics = sample_id + '.mark_dups.metrics'
+        """
+	${picard} MarkDuplicates \
+		REMOVE_DUPLICATES=true \
+		INPUT=${infileBam} \
+		OUTPUT=${outfileBam} \
+		METRICS_FILE=${sample_id}.mark_dups.metrics \
+		ASSUME_SORTED=true \
+		CREATE_INDEX=true \
+		TMP_DIR=${params.java_tmp} \
+		VALIDATION_STRINGENCY=LENIENT
+	"""
 }
 
 
 process clipBam {
-    tag "$sample_id"
-    publishDir "${params.outdir}/Alignments", mode: 'copy', overwrite: true
+        publishDir path: "${params.outdir}/Alignments", mode: 'copy', overwrite: true
 
-    container 'lewis_bwa:v0.1'
+        when:
+        params.seq_type == 'capture'
 
-    input:
-    set sample_id, file(infile_bam) from markDuplicatesOutput_BAM_ch
-    file(reference) 
+        input:
+        set sample_id, file(infileBam) from markDuplicatesOutput
 
-    output:
-    set sample_id, file outfile_bam into clipBamOutput_BAM_ch
-    set sample_id, file outfile_metrics into clipBamOutput_QC_ch
+        output:
+        set sample_id, file(outfileBam) into clipBamOutput
+        set sample_id, file('*.clipbam.metrics') into clipBamOutput_metrics
+ 
+        script:
+        outfileBam = sample_id + '.sort.bam'
+	outfileMetrics = sample_id + '.clipbam.metrics'
+        """
+	${params.fgbio} ClipBam \
+                --input ${infileBam} \
+                --output ${outfileBam} \
+                --metrics ${outfileMetrics} \
+                --ref ${params.reference} \
+                --clip-overlapping-reads=true \
+                --clipping-mode Hard
 
-    when:
-    params.seq_type != 'umi' || params.seq_type != 'cfdna'
-
-    script:
-    outfile_bam = sample_id + ".sort.bam"
-    outfile_metrics = sample_id + ".clipbam.metrics"
-
-    """
-    java -jar /usr/bin/fgbio.jar ClipBam \
-        --input ${infile_bam}  \
-        --output ${outfile_bam} \
-        --metrics ${outfile_metrics} \
-        --ref ${reference} \
-        --clip-overlapping-reads=true \
-        --clipping-mode Hard 
-    
-    """
+	"""
 }
 
 
-//  //----------------------------------------\\
-//  \\              cfDNA analysis            //
-//  //----------------------------------------\\
+//  /~/----------------------------------------\~\
+//  \~\               Q33 analysis             /~/
+//  /~/----------------------------------------\~\
 
 
+process fastqToBam {
 
-process FastqToBam {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
+	when:
+	params.seq_type == 'umi'	
 
-    input:
-    set sample_id, file(reads) from fastqs_ch
+	input:
+	set sample_id, file(infileFastqs) from fastqs_channel
 
-    output:
-    file(outfileBam) into FastqToBam_ch
+	output:
+	set sample_id, file(outfileBam) into fastqToBamOutput
 
-    when:
-    params.seq_type == 'cfdna'
+	script:
+	outfileBam = sample_id + '.bam'
+	"""
+	${params.fgbio} FastqToBam \
+                --input ${infileFastqs} \
+                --read-structures ${params.read_structures} \
+                --output ${sample_id}.precheck.sam \
+                --sort true \
+                --umi-tag RX \
+                --sample ${sample_id} \
+                --library ${sample_id} \
+                --read-group-id ${sample_id}
+	
+	samtools view -h -o ${sample_id}.precheck.sam ${sample_id}.precheck.bam
+	sed 's/RX:Z:\([A-Z]*\)-\([A-Z]*\)/RX:Z:\1\2/' ${sample_id}.precheck.sam > ${sample_id}.sam
+	samtools view -S -b ${sample_id}.sam > ${outfileBam}
+	"""
+}
 
 
-    script:
-    // `--input $reads` will pass all reads matched in fastq glob i.e. R1,R2,R3 in IDT or just R1,R2 in Avenio.
-    // read structres are defined with the global variable params.read_structures
+process markIlluminaAdapters {
 
-    
-    outfileBam = sample_id + 'unmapped.umi.bam'
-    
-    if ( params.umi == 'IDT')
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from fastqToBamOutput
+
+        output:
+        set sample_id, file(outfileBam) into markIlluminaAdaptersOutput
+	set sample_id, file(outfileMetrics) into markIlluminaAdaptersOutput_metrics
+
+        script:
+        outfileBam = sample_id + '.marked.bam'
+
+	"""
+	 ${params.picard} MarkIlluminaAdapters \
+                INPUT=${infileBam} \
+                OUTPUT=${outfileBam} \
+                METRICS=${outfileMetrics} \
+		TMP_DIR=${params.java_tmp}
+	"""
+}
+
+
+process samToFastq {
+
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from markIlluminaAdaptersOutput
+
+        output:
+        set sample_id, file(outfileFastq) into Output samToFastqOutput
+
+        script:
+        outfileBam = sample_id + '.fastq'
+	"""
+	${params.picard} SamToFastq \
+                INPUT=${infileBam} \
+                FASTQ=${outfileFastq} \
+                CLIPPING_ATTRIBUTE=XT \
+                CLIPPING_ACTION=2 \
+                INTERLEAVE=true \
+                NON_PF=true \
+                TMP_DIR=${params.java_tmp}
+	"""
+}
+
+
+process bwa {
+
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from markIlluminaAdaptersOutput
+
+        output:
+        set sample_id, file(outfileBam) into bwaOutput
+
+        script:
+        outfileBam = sample_id + '.aln.bam'
+	"""
+        bwa mem -M -c 1 -t ${params.threads} -k ${params.seed} -p \
+        ${params.reference} ${infileFastq} > ${outfileBam}
         """
-        java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar $params.fgbio FastqToBam \
-            --input $reads \
-            --output ${sample_id}.fq.unaln.umi.bam \
-            --read-structures $params.read_structures \
-            --sort true \
-            --umi-tag RX \
-            --sample ${sample_id} \
-            --library ${sample_id} \
-            --read-group-id ${sample_id}
+}
 
+
+process mergeBamAlignment
+
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from bwaOutput
+
+        output:
+        set sample_id, file(outfileBam) into mergeBamAlignmentOutput
+
+        script:
+        outfileBam = sample_id + '.merged.bam'
+	"""
+        ${params.picard} MergeBamAlignment \
+                R=${params.reference} \
+                UNMAPPED_BAM=${infileUnmappedBam} \
+                ALIGNED_BAM=${infileMappedBam} \
+                OUTPUT=${outfileBam} \
+                CREATE_INDEX=true \
+                ADD_MATE_CIGAR=true \
+                CLIP_ADAPTERS=false \
+                CLIP_OVERLAPPING_READS=true \
+                INCLUDE_SECONDARY_ALIGNMENTS=true \
+                MAX_INSERTIONS_OR_DELETIONS=-1 \
+                PRIMARY_ALIGNMENT_STRATEGY=MostDistant \
+                ATTRIBUTES_TO_RETAIN=XS \
+                TMP_DIR=${params.java_tmp}
         """
+}
 
-    else if ( params.umi == 'AVENIO' )
-        """
-        java -jar params.fgbio FastqToBam \
-            --input $reads \
-            --output ${sample_id}.fq.unaln.umi.precheck.bam \
-            --read-structures $params.read_structures \
-            --sort true \
-            --umi-tag RX \
-            --sample ${sample_id} \
-            --library ${sample_id} \
-            --read-group-id ${sample_id}
 
-        samtools view \
-            -h -o ${sample_id}.fq.unaln.umi.precheck.sam \
-            ${sample_id}.fq.unaln.umi.precheck.bam
+process groupReadsByUmi
 
-        sed 's/RX:Z:\\([A-Z]*\\)-\\([A-Z]*\\)/RX:Z:\\1\\2/' \
-        ${sample_id}.fq.unaln.umi.precheck.sam > \
-        ${sample_id}.fq.unaln.umi.sam
+        when:
+        params.seq_type == 'umi'
 
-        samtools view \
-        -S -b ${sample_id}.fq.unaln.umi.sam > \
-        ${outfileBam}
+        input:
+        set sample_id, file(infileBam) from mergeBamAlignmentOutput
 
-        """
+        output:
+        set sample_id, outfileBam into groupReadsByUmiOutput
+	set sample_id, outfileMetrics into groupReadsByUmiOutput_metrics
 
+        script:
+        outfileBam = sample_id + '.bam'
+	outfileMetrics = sample_id + '.umi.metrics'
+	"""
+	${params.fgbio} GroupReadsByUmi \
+                --input ${infileBam} \
+                --family-size-histogram ${outfileMetrics} \
+                --strategy adjacency \
+                --min-map-q 30 \
+                --raw-tag RX \
+                --assign-tag MI \
+                --min-umi-length ${params.expected_umi_len} \
+                --output ${outfileBam}
+	"""	
+}
+
+
+process sortSam {
+
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from groupReadsByUmiOutput
+
+        output:
+        set sample_id, file(outfileBam) into sorSamOutput
+
+        script:
+        outfileBam = sample_id + '.bam'
+	"""
+	${params.picard} SortSam \
+                SORT_ORDER=queryname \
+                INPUT=${infileBam} \
+                OUTPUT=${outfileBam} \
+                CREATE_INDEX=true \
+                VALIDATION_STRINGENCY=LENIENT \
+                TMP_DIR=${params.java_tmp}
+	"""
+}
+
+
+process markDuplicates {
+	publishDir path: "${params.outdir}/Alignments", mode: 'copy', overwrite: true
+
+        when:
+        params.seq_type == 'umi'
+
+        input:
+        set sample_id, file(infileBam) from sorSamOutput
+
+        output:
+        set sample_id, file(outfileBam) into markDuplicatesOutput
+
+        script:
+        outfileBam = sample_id + '.bam'
+	"""
+	${picard} MarkDuplicates \
+                REMOVE_DUPLICATES=true \
+                INPUT=${infileBam} \
+                OUTPUT=${outfileBam} \
+                METRICS_FILE=${sample_id}.mark_dups.metrics \
+                ASSUME_SORTED=true \
+                CREATE_INDEX=true \
+                TMP_DIR=${params.java_tmp} \
+                VALIDATION_STRINGENCY=LENIENT	
+	"""
+}
+
+
+
+//  /~/----------------------------------------\~\
+//  \~\              cfDNA analysis            /~/
+//  /~/----------------------------------------\~\
+
+
+
+process fastqToBam {
+	
+	when:
+	params.seq_type == 'cfdna'
+
+	input:
+	set sample_id, file(fastqs) from fastq_channel
+
+	output:
+	set sample_id, file(outfileBam) into fastqToBamOutput
+
+	script:
+	outfileBam = sample_id + '.unaln.bam'
+	"""
+	${params.fgbio}	FastqToBam \
+		--input ${fastqs} \
+		--read-structures ${params.read_structures} \
+		--output ${outfileBam} \
+		--sort true \
+		--umi-tag RX \
+		--sample ${sample_id} \
+		--library ${sample_id} \
+		--read-group-id ${sample_id} 
+	"""
+}
+
+
+process  markIlluminaAdapters {
+
+	publishDir path: "${params.outdir}/Alignments", pattern: "*.metrics",  mode: 'copy', overwrite: true
+	
+	when:
+        params.seq_type == 'cfdna'
+
+	input:
+	set sample_id, file(infileBam) from fastqToBamOutput
+
+	output:
+	set sample_id, file(outfileBam) into markIlluminaAdaptersOutput1, markIlluminaAdaptersOutput2
+	set sample_id, file('*.metrics') into markIlluminaAdaptersOutput_metrics
+
+	script:
+	outfileBam = sample_id + '.marked.bam'
+	"""
+	${params.picard} MarkIlluminaAdapters \
+		INPUT=${infileBam} \
+		OUTPUT=${outfileBam} \
+		METRICS=${sample_id}.adapter.metrics
+	"""
+}
+
+
+process samToFastq {
+	
+	when:
+        params.seq_type == 'cfdna'	
+	
+	input:
+	set sample_id, file(infileBam) from markIlluminaAdaptersOutput1
+
+	output:
+	set sample_id, file(outfileFastq) into samToFastqOutput
+
+	script:
+	outfileFastq = sample_id + '.fastq'
+	"""
+	${params.picard} SamToFastq \
+		INPUT=${infileBam} \
+		FASTQ=${outfileFastq} \
+		CLIPPING_ATTRIBUTE=XT \
+		CLIPPING_ACTION=2 \
+		INTERLEAVE=true \
+		NON_PF=true \
+		TMP_DIR=${params.java_tmp}
+	"""
+}
+
+
+process bwaRawReads {
+
+	when:
+        params.seq_type == 'cfdna'
+
+	input:
+        set sample_id, file(infileFastq) from samToFastqOutput
+
+	output:
+	set sample_id, file(outfileBam) into bwaRawReadsOuput
+
+	script:
+	outfileBam = sample_id + '.aln.bam' 
+	"""
+	bwa mem -M -c 1 -t ${params.threads} -k ${params.seed} -p \
+	${params.reference} ${infileFastq} > ${outfileBam}
+	"""
 }
 
 
 process mergeBamAlignment {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
 
-    input:
-    set sample_id, file(unalignedBam) from fastqToBam_ch
-    file(alignedBam) from bwaOutput_ch
-    file(reference)
+	when:
+        params.seq_type == 'cfdna'
 
-    output:
-    file(outfileBam) into mergedBam_ch
+        input:
+        set sample_id, file(infileMappedBam) from bwaRawReadsOuput
+	set sample_id, file(infileUnmappedBam) from markIlluminaAdaptersOutput2
 
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+        output:
+        set sample_id, file(outfileBam) into mergeBamAlignmentOutput
 
-    script:
-    outfileBam = sample_id + '.merged.bam'
+        script:
+        outfileBam = sample_id + '.merged.bam'
+	"""
+	${params.picard} MergeBamAlignment \
+		R=${params.reference} \
+		UNMAPPED_BAM=${infileUnmappedBam} \
+		ALIGNED_BAM=${infileMappedBam} \
+		OUTPUT=${outfileBam} \
+		CREATE_INDEX=true \
+		ADD_MATE_CIGAR=true \
+		CLIP_ADAPTERS=false \
+		CLIP_OVERLAPPING_READS=true \
+		INCLUDE_SECONDARY_ALIGNMENTS=true \
+		MAX_INSERTIONS_OR_DELETIONS=-1 \
+		PRIMARY_ALIGNMENT_STRATEGY=MostDistant \
+		ATTRIBUTES_TO_RETAIN=XS \
+		TMP_DIR=${params.java_tmp}
+	"""
 
-    """
-    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$java_cpu -jar $params.picard MergeBamAlignment MAX_RECORDS_IN_RAM=4000000 \
-        R=${reference} \
-        UNMAPPED_BAM=${unalignedBam} \
-        ALIGNED_BAM=${alignedBam} \
-        OUTPUT=${outfileBam} \
-        CREATE_INDEX=true \
-        ADD_MATE_CIGAR=true \
-        CLIP_ADAPTERS=false \
-        CLIP_OVERLAPPING_READS=true \
-        INCLUDE_SECONDARY_ALIGNMENTS=true \
-        MAX_INSERTIONS_OR_DELETIONS=-1 \
-        PRIMARY_ALIGNMENT_STRATEGY=MostDistant \
-        ATTRIBUTES_TO_RETAIN=XS \
-        TMP_DIR=$params.java_tmp 
-
-    """
 }
 
-process GroupReadsByUmi {
 
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
+process groupReadsByUmi {
 
-    input:
-    set sample_id, file(mergedBam) from mergedBam_ch
+	when:
+        params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+        
+        input:
+        set sample_id, file(infileBam) from mergeBamAlignmentOutput
 
-    output:
-    set sample_id, file(groupedBam) into groupedBam_ch
-    set sample_id, file(groupedBam_metrics) into groupedBamMetrics_ch
+        output:
+        set sample_id, file(outfileBam) into groupReadsByUmiOutput
+        set sample_id, file('*.metrics') into groupReadsByUmiOutput_metrics
 
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+        when:
 
-    script:
-    outfileBam = sample_id + '.grouped.bam'
-
-    """
-    java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar $params.fgbio GroupReadsByUmi \
-    --input ${sample_id}.fq.aln.merged.umi.bam \
-    --family-size-histogram $groupedBam_metrics \
-    --strategy adjacency \
-    --min-map-q 30 \
-    --raw-tag RX \
-    --assign-tag MI \
-    --min-umi-length $params.expected_umi_len \
-    --output ${outfileBam}
-
-    """
+        script:
+        outfileBam = sample_id + '.grouped.bam'
+        outfileMetrics = sample_id + '.umi.metrics'
+        """
+        ${params.fgbio} GroupReadsByUmi \
+                --input ${infileBam} \
+                --family-size-histogram ${outfileMetrics} \
+                --strategy adjacency \
+                --min-map-q 30 \
+                --raw-tag RX \
+                --assign-tag MI \
+                --min-umi-length ${params.expected_umi_len} \
+                --output ${outfileBam}
+        """
 }
 
 
 process callMolecularConsensusReads {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
 
-    input:
-    set sample_id, file(infileBam) from groupedBam_ch
+	when:
+	params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+     
+	input:
+        set sample_id, file(infileBam) from groupReadsByUmiOutput
 
-    output:
-    file(outfileBam) into consensusBam_ch
+        output:
+        set sample_id, file(outfileBam) into callMolecularConsensusReadsOutput
 
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
-
-    script:
-    outfileBam = sample_id + '.consensus.bam'
-
-    """
-    java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar $params.fgbio CallMolecularConsensusReads \
-        --input ${infileBam} \
-        --output ${outfileBam} \
-        --min-reads ${params.umi_family_size} \
-        --min-input-base-quality 30 \
-        --tag MI
-    """
+        script:
+        outfileBam = sample_id + '.consensus.bam'
+        
+	"""
+        ${params.fgbio} CallMolecularConsensusReads \
+            --input ${infileBam} \
+            --output ${outfileBam} \
+            --min-reads ${params.umi_family_size} \
+            --min-input-base-quality 30 \
+            --tag MI
+        """
 }
 
 
-process FilterConsensusReads {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
+process filterConsensusReads {
+	
+	when:
+	params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
 
-    input:
-    set sample_id, file(infileBam) from consensusBam_ch
-    file(reference)
+        input:
+        set sample_id, file(infileBam) from callMolecularConsensusReadsOutput
 
-    output:
-    file(outfileBam) into filterConsensusReads_ch
+        output:
+        set sample_id, file('*.filtered.fastq') into filterConsensusReadsFastqOutput
+	set sample_id, file('*.filtered.bam') into filterConsensusReadsBamOutput
 
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+        script:
+        outfileFastq = sample_id + '.filtered.fastq'
 
-    script:
-    outfileBam = sample_id + '.consensus.filtered.bam'
-    
-    """
-    java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar $params.fgbio FilterConsensusReads \
-        --input ${infileBam} \
-        --output ${outfileBam} \
-        --ref ${reference} \
-        --min-reads 3 \
-        --max-read-error-rate 0.05 \
-        --min-base-quality 40 \
-        --max-base-error-rate 0.1 \
-        --max-no-call-fraction 0.05 \
-        --reverse-per-base-tags true
-    """
+        """
+        ${params.fgbio} FilterConsensusReads \
+        	--input ${infileBam} \
+        	--output ${sample_id}.filtered.bam \
+        	--ref ${params.reference} \
+        	--min-reads 3 \
+        	--max-read-error-rate 0.05 \
+       		--min-base-quality 40 \
+        	--max-base-error-rate 0.1 \
+        	--max-no-call-fraction 0.05 \
+        	--reverse-per-base-tags true
+	
+	 ${params.picard} SamToFastq \
+               	INPUT=${sample_id}.filtered.bam \
+               	FASTQ=${outfileFastq} \
+               	CLIPPING_ATTRIBUTE=XT \
+               	CLIPPING_ACTION=2 \
+               	INTERLEAVE=true \
+               	NON_PF=true \
+               	TMP_DIR=${params.java_tmp}
+        """
 }
+ 
 
-process alignConsensusBam {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
+process consensusBwa {
 
-    input:
-    set sample_id, file(infileBam) from filterConsensus_ch
+	when:
+        params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
 
-    output:
-    file(outfileBam) into alnConsensusBam_ch
+        input:
+        set sample_id, file(infileFastq) from filterConsensusReadsFastqOutput
 
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+        output:
+        set sample_id, file(outfileBam) into consensusBwaOutput
 
-    script:
-    outfileBam = sample_id + '.consensus.aln.bam'
+        script:
+        outfileBam = sample_id + 'consensus.aln.bam'
 
-    """
-    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$java_cpu -jar $params.picard FastqToSam MAX_RECORDS_IN_RAM=4000000 \
-        INPUT=${infileBam} \
-        FASTQ=/dev/stdout \
-        CLIPPING_ATTRIBUTE=XT \
-        CLIPPING_ACTION=2 \
-        INTERLEAVE=true \
-        NON_PF=true \
-        TMP_DIR=${params.java_tmp} |
-    bwa mem -M -c 1 -k $params.seed -t ${params.threads} -p /dev/stdin |
-    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$java_cpu -jar $params.picard MergeBamAlignment MAX_RECORDS_IN_RAM=4000000 \
-        SORT_ORDER=coordinate \
-        INPUT=/dev/stdin \
-        OUTPUT=${outfileBam} \
-        CREATE_INDEX=true \
-        TMP_DIR=${params.java_tmp} \
-        ADD_MATE_CIGAR=true \
-        CLIP_ADAPTERS=true \
-        CLIP_OVERLAPPING_READS=true \
-        INCLUDE_SECONDARY_ALIGNMENTS=true \
-        VALIDATION_STRINGENCY=LENIENT
-
-    """
-
-}
-
-process clipConsensusBam {
-    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
-
-    input:
-    set sample_id, file(infileBam) from alnConsensusBam_ch
-    file(reference)
-
-    output:
-    file(outfileBam) into sortBam_ch
-    file(outfileMetrics) into clipbamMetrics_ch
-
-    when:
-    params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
-
-    script:
-    outfileBam = sample_id + '.sort.bam'
-    outfileMetrics = sample_id + '.clipbam.metrics'
-    
-    """
-    java -Xmx${params.java_mem}g -XX:+AggressiveOpts -XX:+AggressiveHeap -jar $params.fgbio ClipBam \
-        --input ${infileBam} \
-        --ouitput ${outfileBam} \
-        --metrics ${outfileMetrics} \
-        --ref $reference \
-        --clip-overlapping-reads=true \
-        --clipping-mode Hard
-
-    """
-
+        """
+	bwa mem -M -c 1 -t ${params.threads} -k ${params.seed} -p \
+        ${params.reference} ${infileFastq} \
+		| ${params.picard} SortSam \
+			SORT_ORDER=queryname \
+			INPUT=/dev/stdin \
+			OUTPUT=${outfileBam} \
+			CREATE_INDEX=true \
+			VALIDATION_STRINGENCY=LENIENT \
+			TMP_DIR=${params.java_tmp}	
+	"""
 }
 
 
+process consensusSortSam {
 
-//process sortSam_cfDNA {
-//    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
-//
-//    input:
-//    set sample_id, file(infileBam) from groupedBam_ch
-//
-//    output:
-//    file(outfileBam) into sortSam_ch2
-//
-//    when:
-//    params.seq_type = 'cfdna'
-//
-//    script:
-//    outfileBam = sample_id + 'fq.aln.merged.umi.grp.sort.bam'
-//
-//    """
-//    java -Xmx${params.java_mem}g -XX:ParallelGCThreads=$java_cpu -jar $params.picard SortSam MAX_RECORDS_IN_RAM=4000000 \
-//        SORT_ORDER=coordinate \
-//        INPUT=${infileBam} \
-//        OUTPUT=${outfileBam} \
-//        CREATE_INDEX=true \
-//        TMP_DIR=$java_tmp \
-//        VALIDATION_STRINGENCY=LENIENT
-//
-//    """
-//}
-//
-//
-//process MarkDuplicates {
-//    publishDir path: '${params.outdir}/Alignments', mode: 'copy', overwrite: true
-//
-//    input:
-//    set sample_id, file(infileBam) from sortSam_ch2
-//
-//    output:
-//    file(outfileBam) into markDups_ch
-//
-//    when:
-//    params.seq_type = 'cfdna'
-//
-//    script:
-//    outfileBam = sample_id + '.sort.bam'
-//
-//}
+	when:
+        params.seq_type == 'cfdna' || params.seq_type == 'AVENIO'
+
+        input:
+        set sample_id, file(infileBam) from filterConsensusReadsBamOutput
+
+        output:
+        set sample_id, file(outfileBam) into consensusSortSamOutput
+
+        script:
+        outfileBam = sample_id + 'consensus.unaln.bam'
+
+        """
+        ${params.picard} SortSam \
+        	SORT_ORDER=queryname \
+                INPUT=${infileBam} \
+                OUTPUT=${outfileBam} \
+                CREATE_INDEX=true \
+                VALIDATION_STRINGENCY=LENIENT \
+                TMP_DIR=${params.java_tmp}
+        """
+}
 
 
+process consensusMergeBamAlignment {
+
+        when:
+        params.seq_type == 'cfdna'
+
+        input:
+	set sample_id, file(infileMappedBam) from consensusBwaOutput
+	set sample_id, file(infileUnmappedBam) from consensusSortSamOutput
+        
+	output:
+	set sample_id, file(outfileBam) into consensusMergeBamAlignmentOutput
+
+        script:
+        outfileBam = sample_id + '.merged.bam'
+        """
+        ${params.picard} MergeBamAlignment \
+                R=${params.reference} \
+                UNMAPPED_BAM=${infileUnmappedBam} \
+                ALIGNED_BAM=${infileMappedBam} \
+                OUTPUT=${outfileBam} \
+                CREATE_INDEX=true \
+                ADD_MATE_CIGAR=true \
+                CLIP_ADAPTERS=false \
+                CLIP_OVERLAPPING_READS=true \
+                INCLUDE_SECONDARY_ALIGNMENTS=true \
+                MAX_INSERTIONS_OR_DELETIONS=-1 \
+                PRIMARY_ALIGNMENT_STRATEGY=MostDistant \
+                ATTRIBUTES_TO_RETAIN=XS \
+                TMP_DIR=${params.java_tmp}
+        """
+}
 
 
-//Channel.fromPath('test_*.txt').set{ test_ch }
-//
-//process foo {
-//	input:
-//	file x from test_ch
-//	
-//	script:
-//	extension = x.getExtension()
-//	"""
-//	 echo ${extension} > extension.txt
-//	"""
-//}
-//
-//
-//targets = [ file(params.intervals), file(params.bed_interval), file(params.hotspots) ]
-//targets_extensions = ['', '.targetbed', '.hotspots' ]
-//
-//process calculateHsMetrics {
-//
-//	publishDir "${params.outdir}/qc", mode: 'copy', overwrite: true
-//
-//	input:
-//	file bwaBam from clipBamOutput_BAM_ch
-//	each target from targets
-//	each extension from targets_extensions
-//	
-//
-//	output:
-//	set sample_id, file "*.{qc.metrics*, *qc.coverage*, *base.coverage*}" into hsMetricsOutput_ch
-//
-//	script:
-//	
-//	"""
-//    gatk CalculateHsMetrics \
-//    	REFERENCE_SEQUENCE=${reference} \
-//    	INPUT=${bwaBam} \
-//    	OUTPUT=${sample_id}.qc.metrics${ext} \
-//    	BAIT_INTERVALS=${targets} \
-//    	TARGET_INTERVALS=${targets} \
-//    	BAIT_SET_NAME=${sample_id} \
-//    	METRIC_ACCUMULATION_LEVEL=ALL_READS \
-//    	TMP_DIR=${params.java_tmp} \
-//    	PER_TARGET_COVERAGE=${sample_id}.qc.coverage${ext} \
-//    	PER_BASE_COVERAGE=${sample_id}.base.coverage${ext} \
-//    	VALIDATION_STRINGENCY=LENIENT    
-//
-//	"""
-//
-//process collectTargedPcrMetrics {
-//
-//    input:
-//    file bwaBam from clipBamOutput_BAM_ch
-//    file targets from target_ch
-//    file reference
-//
-//    output:
-//    set sample_id, file outfile_hsmetrics into hsMetricsOutput_ch
-//
-//    script:
-//
-//    """
-//    CollectTargetedPcrMetrics \
-//	REFERENCE_SEQUENCE=${reference} \
-//	INPUT=${bwaBam} \
-//	OUTPUT=${sample_id}.qc.metrics \
-//	AMPLICON_INTERVALS=${targets} \
-//	TARGET_INTERVALS=${targets} \
-//	CUSTOM_AMPLICON_SET_NAME=${sample_id} \
-//	METRIC_ACCUMULATION_LEVEL=ALL_READS \
-//	TMP_DIR=${params.java_tmp{ \
-//	PER_TARGET_COVERAGE=${sample_id}.qc.coverage \
-//	PER_BASE_COVERAGE=${sample_id}.base.coverage \
-//	VALIDATION_STRINGENCY=LENIENT
-//
-//    perl $getexoncoverage --dir $output_dir --samp $samp_id --tcontent $tcontent
-//    cp $output_dir/${samp_id}* $transfer_dir/.
-//
-//
-//    """
-//}
-//
-//
-//
-//process baseRecalibartor {
-//    publishDir "${params.outdir}/snv", mode: 'copy', overwrite: true
-//
-//    input:
-//    file(bam) from clipBamOutput_ch_BAM
-//    file(reference)
-//    
-//    output:
-//    set sample_id, file(recal_table) into baseRecalibratorOutput_ch
-//
-//    script:
-//    
-//    """
-//    gatk BaseRecalibrator \
-//    	-L ??? \
-//  		--interval-set-rule UNION \
-//		--interval-merging-rule OVERLAPPING_ONLY \
-// 		--interval-padding 200 \
-//  		-I $gatk_input \
-//  		-R $ref_fasta  \
-//  		-O ${sample_id}.recalibrated.table \
-//  		--known-sites $dbsnp_vcf \
-//  		--known-sites $indel_vcf \
-//  		--read-filter NotSecondaryAlignmentReadFilter \
-//  		--read-filter NotSupplementaryAlignmentReadFilter $dupfilter \
-//  		--read-filter OverclippedReadFilter \
-//		--filter-too-short 60 \
-//		--dont-require-soft-clips-both-ends true
-//
-//    """
-//    }
-//
-//
-//process applyBQSR {
-//    publishDir "${params.outdir}/snv", mode: 'copy', overwrite: true
-//
-//	input:
-//	file(recal_table) from baseRecalibratorOutput_ch
-//	file(bam) from clipBamOutput_ch_BAM
-//	file(reference)
-//
-//	output:
-//	set sample_id, file(recalibratedBam) into applyBQSROutput_ch
-//
-//	script:
-//
-//	"""
-//	gatk ApplyBQSR \
-//		-L ??? \
-//		--bqsr-recal-file ${recal_table} \
-//		--interval-set-rule UNION \
-//		--interval-merging-rule OVERLAPPING_ONLY \
-//		--interval-padding 200 \
-//		-I ${bam} \
-//		-R ${reference} \
-//		-O ${recalibratedBam} \
-//		--read-filter NotSecondaryAlignmentReadFilter \
-// 		--read-filter NotSupplementaryAlignmentReadFilter $dupfilter \
-//  		--read-filter OverclippedReadFilter \
-//		--filter-too-short 60 \
-//		--dont-require-soft-clips-both-ends true
-//	
-//	"""
-//
-//
-//    }
+process consensusClipBam {
 
+	publishDir path: "${params.outdir}/Alignments", mode: 'copy', overwrite: true
 
+        when:
+        params.seq_type == 'cfdna'
 
+        input:
+        set sample_id, file(infileBam) from consensusMergeBamAlignmentOutput
 
+        output:
+        set sample_id, file(outfileBam) into consensusClipBamOutput
+	set sample_id, file(outfileMetrics) into consensusClipBamOutput_metrics	
 
+        script:
+        outfileBam = sample_id + '.sort.bam'
+	outfileMetrics = sample_id + '.clipbam.metrics'
+	"""
+	${params.fgbio} ClipBam \
+		--input ${infileBam} \
+		--output ${outfileBam} \
+		--metrics ${outfileMetrics} \
+		--ref ${params.reference} \
+		--clip-overlapping-reads=true \
+		--clipping-mode Hard	
+	"""
+}
