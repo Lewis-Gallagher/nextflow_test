@@ -7,11 +7,11 @@
 #BSUB -o output.%J
 #BSUB -e errors.%J
 
-module add java/sun8
-module add nextflow
-module add samtools
-module add bwa
+#module add java/sun8
+#module add nextflow
+#module add samtools
+#module add bwa
 
 # Initiate NextFlow Job
-nextflow ./main.nf
+nextflow ./main.nf -c nextflow.config -cache true
 
