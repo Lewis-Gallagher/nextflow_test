@@ -1,12 +1,12 @@
 #!/usr/bin/env nextflow
 params.scriptDir = "${baseDir}/bin"
-params.pool_id = "Pool_1261"
-params.samplesheet="/$baseDir/data/Analysis/${params.pool_id}.hpc.csv"
+params.pool_id = "Pool_1645"
+params.samplesheet="/$baseDir/data/samplesheets/${params.pool_id}.hpc.csv"
 params.bwa_cpus = 4
 params.cfdna_cpus = 10
 params.fastqs = "/$baseDir/data/fastq/${params.pool_id}/*_{R1,R2,R3}_*.fastq.gz"
 params.reference = "/$baseDir/data/hg19/hg19.fa"
-params.outdir = "/$baseDir/data/Analysis/${pool_id}"
+params.outdir = "/$baseDir/data/Analysis/${params.pool_id}"
 params.resources = "/scratch/DMP/DUDMP/TRANSGEN/transgen-mdx/ngs/7.resources"
 params.seed = 50
 params.min_reads=3
@@ -27,6 +27,8 @@ params.gatk_engine = "/apps/gatk/4.0.5.1/gatk-package-4.0.5.1-local.jar"
 params.dbsnp = "${params.resources}/hg19/bedfiles/dbsnp_142.b37.20150102.snp.withchr.vcf"
 params.indel = "${params.resources}/hg19/bedfiles/dbsnp_142.b37.20150102.indel.withchr.vcf"
 params.PON_WGS = "${params.resources}/hg19/PanelOfNormal/panel_of_normal_WGS.vcf.gz"
+
+params.sv_cpus = 6
 
 //--------------------------------------------------
 
@@ -246,10 +248,27 @@ params.WGS_gnomad = "${params.resources}/hg19/bedfiles/ens61_human_chromosomes_a
 
 
 
+process groupSamples {
+	
+	input:
+	val(info) from samplesheet
+	
+	output:
+	
+	script:
+	
+	"""
+	"""
+
+}
+
+
+
+// Mapping process can handle all three current sequencing types (amplicon, capture and cfDNA)
 process align {
 	publishDir path: "${params.outdir}/Alignments", pattern: "${sample_id}.sort.ba?", mode: 'copy', overwrite: true
         publishDir path: "${params.outdir}/Stats", pattern: '*.metrics', mode: 'copy', overwrite: true
-	publishDir path: "${params.outdir}/scripts", pattern: "map.${sample_id}.sh", mode: 'copy', overwrite: true
+	publishDir path: "${params.outdir}/scripts", pattern: "${map_script}", mode: 'copy', overwrite: true
 	
 	tag "MAP_${sample_id}"
 
@@ -257,7 +276,7 @@ process align {
 	val(info) from samplesheet_align
 
 	output:
-	file("bwa.${sample_id}.sh")
+	file("${map_script}")
         set info, file("${sample_id}.sort.ba?") into alignOutput, alignOutput1
         set info, file('*.metrics') into alignOutput_metrics
 
@@ -273,10 +292,11 @@ process align {
 	fastq_dir = "${baseDir}/data/fastq/${pool_id}"
 	rm_dups = seq_type == "amplicon" ? 'false' : 'true'
 	num_cpus = seq_type == "cfdna" ? params.cfdna_cpus : params.bwa_cpus
+	map_script = "map.${sample_id}.sh"
 
 	"""
 	perl ${params.scriptDir}/bwa.pl \
-		--output_script bwa.${sample_id}.sh \
+		--output_script ${map_script} \
 		--java_tmp ${params.java_tmp} \
 		--picard ${params.picard_jar} \
 		--num_cpu ${num_cpus} \
@@ -291,15 +311,16 @@ process align {
 		--run_type none \
 		--rm_dups ${rm_dups}
 
-	. bwa.${sample_id}.sh
+	. ${map_script}
 	"""
 }
 
 
+// QC process
+
 process qc {
 	publishDir path: "${params.outdir}/Stats", pattern: "${sample_id}.*", mode: 'copy', overwrite: true
 	publishDir path: "${params.outdir}/scripts", pattern: "qc.${sample_id}.sh",  mode: 'copy', overwrite: true
-
 	tag "QC_${sample_id}"
 
 	input:
@@ -315,11 +336,11 @@ process qc {
         tcontent = info['tumour_content']
 	bedfile = info["bedfile"]	
 
-	if ( tcontent == null ) {
+	if ( tcontent == "" ) {
 		tcontent = 0.5 
 	}
 	
-	if ( bedfile != null ) {
+	if ( bedfile != "" ) {
 		interval = "${bedfile}.CoverageCalculator.bed.intervals"
 	} else {
 		interval = 'wgs'
@@ -348,7 +369,7 @@ process qc {
 // SNV module currenlty cannot handle multiple tumour samples per control. Either tumour-only or 1 tumour per normal sample is supported
 
 process snv {
-	publishDir path: "${params.outdir}/Variants/${sample_id}", pattern: "{*${sample_id}.vcf*, 1.SNV.${sample_id}.bamout.ba?, 1.${sample_id}.vardict*}", mode: 'copy', overwrite: true
+	publishDir path: "${params.outdir}/Variants/${sample_id}", patern: "{*.${sample_id}.vcf*, 1.SNV.${sample_id}.bamout.ba?, 1.${sample_id}.vardict*}",  mode: 'copy', overwrite: true
         publishDir path: "${params.outdir}/scripts", pattern: "snv.${sample_id}.sh",  mode: 'copy', overwrite: true
         tag "SNV_${sample_id}"
 
@@ -409,6 +430,49 @@ process snv {
 	"""
 
 }
+
+
+process sv {
+	publishDir path: "${params.outdir}/SVs/${sample_id}",  mode: 'copy', overwrite: true
+        publishDir path: "${params.outdir}/scripts", pattern: "sv.${sample_id}.sh",  mode: 'copy', overwrite: true
+        tag "SV_${sample_id}"
+
+	input:
+	tuple val(info), file(infileBam) from alignOutput_SV
+
+	output:
+	file("sv.${sample_id}.sh")
+
+	script:
+	sample_id = info["sample_id"]
+	gatk_grp = infop["gatk_grp"]
+	seq_type = info["seq_type"]
+	bedfile = info["bedfile"]
+	tag = info["tag"]
+	
+	control = "0"
+
+        if ( tag == "normal" || tag == "control" ) {
+                control = "${gatk_grp}.sort.bam"
+        } else {
+                tumour_bam = "${gatk_grp}.sort.bam"
+        }
+
+	
+	"""
+	python ${params.scriptDir}/sv.py \
+		--output_script sv.${sample_id}.sh \
+		--normal_bam ${control} \
+		--tumour_bam ${tumour_bam} \
+		--gatk_grp ${gatk_grp} \
+		--proj_id ${pool_id} \
+		--num_cpus ${params.sv_cpus} \
+		--panel ${bedfile} \
+		--resourcefile ${resourcefile} \
+		--seq_type ${seq_type}
+	"""
+}
+
 
 
 
